@@ -1,0 +1,36 @@
+{
+  "name": "api",
+  "type": "module",
+  "imports": {
+    "#*": "./src/*.ts"
+  },
+  "scripts": {
+    "dev": "cf dev",
+    "build": "cf build",
+    "deploy": "cf deploy",
+    "typecheck": "cf workers types && tsc",
+    "db:generate": "bunx drizzle-kit generate",
+    "db:push": "bunx drizzle-kit push",
+    "db:studio": "bunx drizzle-kit studio"
+  },
+  "dependencies": {
+    "@hono/zod-validator": "^0.9.1",
+    "@neondatabase/serverless": "^1.2.0",
+    "drizzle-orm": "^1.0.0-rc.5",
+    "hono": "5.0.0-rc.1",
+    "zod": "^4.6.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "beta",
+    "@hono/cli": "^1.0.0-rc.8",
+    "@types/node": "^26.6.6",
+    "cf": "^1.0.0-beta.14",
+    "drizzle-kit": "^1.0.0-rc.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.0"
+  },
+  "trustedDependencies": [
+    "esbuild",
+    "workerd"
+  ]
+}
