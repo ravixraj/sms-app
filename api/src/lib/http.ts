@@ -1,5 +1,8 @@
 import { HTTPException } from "hono/http-exception";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
+import type {
+  ClientErrorStatusCode,
+  ServerErrorStatusCode,
+} from "hono/utils/http-status";
 
 /** HTTP utils */
 export const HttpStatus = {
@@ -25,42 +28,19 @@ export const HttpStatus = {
   GATEWAY_TIMEOUT: 504,
 } as const;
 
-export const HttpPhrase: Record<keyof typeof HttpStatus, string> = {
-  OK: "OK",
-  CREATED: "Created",
-  ACCEPTED: "Accepted",
-  NO_CONTENT: "No Content",
-
-  BAD_REQUEST: "Bad Request",
-  UNAUTHORIZED: "Unauthorized",
-  FORBIDDEN: "Forbidden",
-  NOT_FOUND: "Not Found",
-  METHOD_NOT_ALLOWED: "Method Not Allowed",
-  CONFLICT: "Conflict",
-  PAYLOAD_TOO_LARGE: "Payload Too Large",
-  UNPROCESSABLE_ENTITY: "Unprocessable Entity",
-  TOO_MANY_REQUESTS: "Too Many Requests",
-
-  INTERNAL_SERVER_ERROR: "Internal Server Error",
-  NOT_IMPLEMENTED: "Not Implemented",
-  BAD_GATEWAY: "Bad Gateway",
-  SERVICE_UNAVAILABLE: "Service Unavailable",
-  GATEWAY_TIMEOUT: "Gateway Timeout",
-};
+export type ApiSuccess<T> = { success: true; message: string; data: T };
+export type ApiError = { success: false; message: string; data: null };
+export type ApiResponse<T> = ApiSuccess<T> | ApiError;
+export type ApiErrorStatus = ClientErrorStatusCode | ServerErrorStatusCode;
 
 export const HTTP = {
-  Response<T>(message: string, data: T | null = null, success: boolean = true) {
-    return {
-      message,
-      data,
-      success,
-    };
+  success<T>(data: T, message = "OK"): ApiSuccess<T> {
+    return { success: true, message, data };
   },
-  Error(
-    status: ContentfulStatusCode = HttpStatus.INTERNAL_SERVER_ERROR,
-    message: string,
-    error?: unknown,
-  ) {
+  failure(message: string): ApiError {
+    return { success: false, message, data: null };
+  },
+  error(status: ApiErrorStatus, message: string, error?: unknown) {
     return new HTTPException(status, { message, cause: error });
   },
 };

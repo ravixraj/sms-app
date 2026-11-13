@@ -1,8 +1,7 @@
-import { zValidator as zv } from "@hono/zod-validator";
+import { zValidator as validate } from "@hono/zod-validator";
 import type { ValidationTargets } from "hono";
 import type { ZodType } from "zod";
-import { HTTP } from "./http";
-import { type ContentfulStatusCode } from "hono/utils/http-status";
+import { HTTP, HttpStatus } from "./http";
 
 export const zValidator = <
   T extends ZodType,
@@ -11,20 +10,13 @@ export const zValidator = <
   target: Target,
   schema: T,
 ) =>
-  zv(target, schema, (result, c) => {
-    if (!result.success) {
-      const issue = result.error?.issues[0];
-      const path = issue?.path.join(".");
-      const isMissing =
-        issue?.code === "invalid_type" && issue.input === undefined;
-
-      const message = isMissing
-        ? path
-          ? `Missing '${path}' field`
-          : "Missing required fields"
-        : issue?.message || "Invalid input data";
-
-      const statusCode = (isMissing ? 400 : 422) as ContentfulStatusCode;
-      return c.json(HTTP.Response(message, null, false), statusCode);
-    }
+  validate(target, schema, (result, c) => {
+    if (result.success) return;
+    const issue = result.error.issues[0];
+    const path = issue?.path.join(".");
+    const message = issue?.message ?? "Invalid request data";
+    return c.json(
+      HTTP.failure(path ? `${path}: ${message}` : message),
+      HttpStatus.UNPROCESSABLE_ENTITY,
+    );
   });

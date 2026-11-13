@@ -1,5 +1,4 @@
 import { USER_ROLE } from "#const";
-import type { AppBindings } from "#app-env";
 import { createDb, getPgErrorCode } from "#db/index";
 import { user } from "#db/schema";
 import {
@@ -8,7 +7,7 @@ import {
   passwordMatch,
   toPublicUser,
 } from "#lib/helper";
-import { HTTP, HttpPhrase, HttpStatus } from "#lib/http";
+import { HTTP, HttpStatus } from "#lib/http";
 import { deleteAvatar, uploadAvatar } from "#lib/r2";
 import {
   createUserSchema,
@@ -31,11 +30,7 @@ type Db = ReturnType<typeof createDb>;
 type UserRecord = typeof user.$inferSelect;
 
 /** Creates a token pair and stores the refresh token on the user row. */
-const issueSession = async (
-  db: Db,
-  env: AppBindings,
-  userRecord: UserRecord,
-) => {
+const issueSession = async (db: Db, env: Env, userRecord: UserRecord) => {
   const tokens = await generateAccessAndRefreshTokens(
     { userId: userRecord.id, role: userRecord.role },
     {
@@ -67,12 +62,12 @@ export default new Hono<AuthEnv>()
     });
 
     if (!userRecord || !(await passwordMatch(password, userRecord.password))) {
-      throw HTTP.Error(HttpStatus.UNAUTHORIZED, "Invalid email or password");
+      throw HTTP.error(HttpStatus.UNAUTHORIZED, "Invalid email or password");
     }
 
     const session = await issueSession(db, c.env, userRecord);
 
-    return c.json(HTTP.Response(HttpPhrase.OK, session), HttpStatus.OK);
+    return c.json(HTTP.success(session), HttpStatus.OK);
   })
   .post("/auth/refresh", zValidator("json", refreshTokenSchema), async (c) => {
     const db = createDb(c.env.DATABASE_URL);
@@ -83,7 +78,7 @@ export default new Hono<AuthEnv>()
     try {
       payload = await verify(refreshToken, c.env.REFRESH_TOKEN_SECRET, "HS256");
     } catch (error) {
-      throw HTTP.Error(
+      throw HTTP.error(
         HttpStatus.UNAUTHORIZED,
         "Invalid or expired refresh token",
         error,
@@ -91,7 +86,7 @@ export default new Hono<AuthEnv>()
     }
 
     if (typeof payload.userId !== "string") {
-      throw HTTP.Error(
+      throw HTTP.error(
         HttpStatus.UNAUTHORIZED,
         "Invalid or expired refresh token",
       );
@@ -102,7 +97,7 @@ export default new Hono<AuthEnv>()
     });
 
     if (!userRecord || userRecord.refreshToken !== refreshToken) {
-      throw HTTP.Error(
+      throw HTTP.error(
         HttpStatus.UNAUTHORIZED,
         "Invalid or expired refresh token",
       );
@@ -110,7 +105,7 @@ export default new Hono<AuthEnv>()
 
     const session = await issueSession(db, c.env, userRecord);
 
-    return c.json(HTTP.Response(HttpPhrase.OK, session), HttpStatus.OK);
+    return c.json(HTTP.success(session), HttpStatus.OK);
   })
   .post("/auth/logout", authMiddleware, async (c) => {
     const db = createDb(c.env.DATABASE_URL);
@@ -121,7 +116,7 @@ export default new Hono<AuthEnv>()
       .set({ refreshToken: null })
       .where(eq(user.id, userId));
 
-    return c.json(HTTP.Response(HttpPhrase.OK, null), HttpStatus.OK);
+    return c.json(HTTP.success(null), HttpStatus.OK);
   })
   .post(
     "/users",
@@ -135,13 +130,16 @@ export default new Hono<AuthEnv>()
         email,
         password,
         role,
-        organizationId,
+        organizationId: requestedOrganizationId,
         avatar,
         gender,
         bloodGroup,
         dob,
         address,
       } = c.req.valid("form");
+
+      const organizationId =
+        role === USER_ROLE.ADMIN ? null : requestedOrganizationId;
 
       const [existingUser] = await db
         .select({ id: user.id })
@@ -150,7 +148,7 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (existingUser) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.CONFLICT,
           "A user with this email already exists",
         );
@@ -158,7 +156,9 @@ export default new Hono<AuthEnv>()
 
       const [hashedPassword, uploadedAvatar] = await Promise.all([
         hashPassword(password),
-        avatar ? uploadAvatar(c.env.USER_AVATARS, avatar) : null,
+        avatar
+          ? uploadAvatar(c.env.USER_AVATARS, avatar, c.env.AVATAR_PUBLIC_URL)
+          : null,
       ]);
 
       let newUser: UserRecord;
@@ -171,9 +171,8 @@ export default new Hono<AuthEnv>()
             email,
             password: hashedPassword,
             role,
-            organizationId:
-              role === USER_ROLE.ADMIN ? null : (organizationId ?? null),
-            avatar: uploadedAvatar?.key,
+            organizationId,
+            avatar: uploadedAvatar?.url,
             gender,
             bloodGroup,
             dob,
@@ -182,17 +181,24 @@ export default new Hono<AuthEnv>()
           .returning();
 
         if (!newUser) {
-          throw HTTP.Error(HttpStatus.BAD_REQUEST, "Failed to create user");
+          throw HTTP.error(
+            HttpStatus.INTERNAL_SERVER_ERROR,
+            "Failed to create user",
+          );
         }
       } catch (error) {
         if (uploadedAvatar) {
-          await deleteAvatar(c.env.USER_AVATARS, uploadedAvatar.key);
+          await deleteAvatar(
+            c.env.USER_AVATARS,
+            uploadedAvatar.key,
+            c.env.AVATAR_PUBLIC_URL,
+          );
         }
 
         const databaseCode = getPgErrorCode(error);
 
         if (databaseCode === "23505") {
-          throw HTTP.Error(
+          throw HTTP.error(
             HttpStatus.CONFLICT,
             "A user with this email already exists",
             error,
@@ -200,7 +206,7 @@ export default new Hono<AuthEnv>()
         }
 
         if (databaseCode === "23503") {
-          throw HTTP.Error(
+          throw HTTP.error(
             HttpStatus.NOT_FOUND,
             "Organization not found",
             error,
@@ -211,9 +217,7 @@ export default new Hono<AuthEnv>()
       }
 
       return c.json(
-        HTTP.Response(HttpPhrase.CREATED, {
-          user: toPublicUser(newUser),
-        }),
+        HTTP.success({ user: toPublicUser(newUser) }, "Created"),
         HttpStatus.CREATED,
       );
     },
@@ -235,11 +239,11 @@ export default new Hono<AuthEnv>()
     });
 
     if (!userRecord) {
-      throw HTTP.Error(HttpStatus.NOT_FOUND, "User not found");
+      throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
     }
 
     return c.json(
-      HTTP.Response(HttpPhrase.OK, { user: toPublicUser(userRecord) }),
+      HTTP.success({ user: toPublicUser(userRecord) }),
       HttpStatus.OK,
     );
   })
@@ -259,11 +263,15 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!existing) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "User not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
       }
 
       const uploadedAvatar = data.avatar
-        ? await uploadAvatar(c.env.USER_AVATARS, data.avatar)
+        ? await uploadAvatar(
+            c.env.USER_AVATARS,
+            data.avatar,
+            c.env.AVATAR_PUBLIC_URL,
+          )
         : null;
 
       let updatedUser: UserRecord | undefined;
@@ -275,15 +283,19 @@ export default new Hono<AuthEnv>()
             name: data.name,
             gender: data.gender,
             bloodGroup: data.bloodGroup,
-            avatar: uploadedAvatar?.key,
             dob: data.dob,
+            avatar: uploadedAvatar?.url,
             address: data.address,
           })
           .where(eq(user.id, userId))
           .returning();
       } catch (error) {
         if (uploadedAvatar) {
-          await deleteAvatar(c.env.USER_AVATARS, uploadedAvatar.key);
+          await deleteAvatar(
+            c.env.USER_AVATARS,
+            uploadedAvatar.key,
+            c.env.AVATAR_PUBLIC_URL,
+          );
         }
 
         throw error;
@@ -291,23 +303,31 @@ export default new Hono<AuthEnv>()
 
       if (!updatedUser) {
         if (uploadedAvatar) {
-          await deleteAvatar(c.env.USER_AVATARS, uploadedAvatar.key);
+          await deleteAvatar(
+            c.env.USER_AVATARS,
+            uploadedAvatar.key,
+            c.env.AVATAR_PUBLIC_URL,
+          );
         }
 
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "User not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
       }
 
       // Delete the old avatar only after the database update succeeds.
       if (
         uploadedAvatar &&
         existing.avatar &&
-        existing.avatar !== uploadedAvatar.key
+        existing.avatar !== uploadedAvatar.url
       ) {
-        await deleteAvatar(c.env.USER_AVATARS, existing.avatar);
+        await deleteAvatar(
+          c.env.USER_AVATARS,
+          existing.avatar,
+          c.env.AVATAR_PUBLIC_URL,
+        );
       }
 
       return c.json(
-        HTTP.Response(HttpPhrase.OK, { user: toPublicUser(updatedUser) }),
+        HTTP.success({ user: toPublicUser(updatedUser) }),
         HttpStatus.OK,
       );
     },

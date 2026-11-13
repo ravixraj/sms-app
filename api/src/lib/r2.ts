@@ -1,40 +1,55 @@
-import type { AppBindings } from "#app-env";
 import { HTTP, HttpStatus } from "./http";
 
-const EXTENSION_BY_TYPE: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-};
+type Bucket = Env["USER_AVATARS"];
 
-const ALLOWED_IMAGE_TYPES = Object.keys(EXTENSION_BY_TYPE);
-
-type R2Bucket = AppBindings["USER_AVATARS"];
-
-export const deleteAvatar = async (bucket: R2Bucket, key: string) => {
+export const deleteAvatar = async (
+  bucket: Bucket,
+  keyOrUrl: string,
+  publicUrl: string,
+) => {
+  const prefix = `${publicUrl.replace(/\/$/, "")}/`;
+  const key = keyOrUrl.startsWith(prefix)
+    ? keyOrUrl.slice(prefix.length)
+    : keyOrUrl;
+  if (!/^avatars\/[\da-f-]+\.(jpg|webp)$/.test(key)) return;
   try {
     await bucket.delete(key);
-  } catch (error) {
-    // Cleanup failures must not fail the request that already succeeded.
-    console.error(`Failed to delete avatar "${key}"`, error);
+  } catch {
+    console.error({ message: "Avatar cleanup failed", key });
   }
 };
 
-export const uploadAvatar = async (bucket: R2Bucket, file: File) => {
-  const extension = EXTENSION_BY_TYPE[file.type];
-
-  if (!extension) {
-    throw HTTP.Error(
-      HttpStatus.BAD_REQUEST,
-      `Invalid file type. Allowed types: ${ALLOWED_IMAGE_TYPES.join(", ")}`,
+export const uploadAvatar = async (
+  bucket: Bucket,
+  file: File,
+  publicUrl: string,
+) => {
+  if (!publicUrl.startsWith("https://")) {
+    throw HTTP.error(
+      HttpStatus.SERVICE_UNAVAILABLE,
+      "Avatar hosting is not configured",
     );
   }
-
-  const key = `avatars/${crypto.randomUUID()}.${extension}`;
-
+  if (file.size === 0 || file.size > 80 * 1024) {
+    throw HTTP.error(
+      HttpStatus.BAD_REQUEST,
+      "Avatar must be between 1 byte and 80 KB",
+    );
+  }
+  const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const webp =
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP";
+  if (!jpeg && !webp)
+    throw HTTP.error(HttpStatus.BAD_REQUEST, "Upload a JPEG or WebP image");
+  const key = `avatars/${crypto.randomUUID()}.${jpeg ? "jpg" : "webp"}`;
   await bucket.put(key, await file.arrayBuffer(), {
-    httpMetadata: { contentType: file.type },
+    httpMetadata: {
+      contentType: jpeg ? "image/jpeg" : "image/webp",
+      cacheControl: "public, max-age=31536000, immutable",
+    },
   });
-
-  return { key };
+  return { key, url: `${publicUrl.replace(/\/$/, "")}/${key}` };
 };

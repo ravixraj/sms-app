@@ -14,6 +14,7 @@ export default defineConfig({
       REFRESH_TOKEN_SECRET: bindings.secret(),
       REFRESH_TOKEN_EXPIRY: bindings.text("1209600"),
       USER_AVATARS: bindings.r2(),
+      AVATAR_PUBLIC_URL: bindings.text(""),
     },
   },
 });

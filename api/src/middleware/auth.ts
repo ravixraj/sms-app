@@ -1,5 +1,4 @@
 import { isUserRole, type UserRole } from "#const";
-import type { AppBindings } from "#app-env";
 import { HTTP, HttpStatus } from "#lib/http";
 import { createFactory } from "hono/factory";
 import { verify, type JwtVariables } from "hono/jwt";
@@ -11,7 +10,7 @@ export type AuthUser = {
 };
 
 export type AuthEnv = {
-  Bindings: AppBindings;
+  Bindings: Env;
   Variables: {
     user: AuthUser;
   } & JwtVariables<AuthUser>;
@@ -23,7 +22,7 @@ export const authMiddleware = factory.defineMiddleware(async (c, next) => {
   const authHeader = c.req.header("Authorization");
 
   if (!authHeader?.startsWith("Bearer ")) {
-    throw HTTP.Error(
+    throw HTTP.error(
       HttpStatus.UNAUTHORIZED,
       "Missing or malformed Authorization header",
     );
@@ -38,7 +37,7 @@ export const authMiddleware = factory.defineMiddleware(async (c, next) => {
       "HS256",
     );
   } catch (error) {
-    throw HTTP.Error(
+    throw HTTP.error(
       HttpStatus.UNAUTHORIZED,
       "Invalid or expired access token",
       error,
@@ -46,7 +45,7 @@ export const authMiddleware = factory.defineMiddleware(async (c, next) => {
   }
 
   if (typeof payload.userId !== "string" || !isUserRole(payload.role)) {
-    throw HTTP.Error(HttpStatus.UNAUTHORIZED, "Invalid access token payload");
+    throw HTTP.error(HttpStatus.UNAUTHORIZED, "Invalid access token payload");
   }
 
   c.set("user", { userId: payload.userId, role: payload.role });
@@ -59,7 +58,7 @@ export const verifyPermission = (roles: UserRole | UserRole[]) => {
 
   return factory.defineMiddleware(async (c, next) => {
     if (!allowedRoles.includes(c.get("user").role)) {
-      throw HTTP.Error(
+      throw HTTP.error(
         HttpStatus.FORBIDDEN,
         "You do not have permission to perform this action",
       );

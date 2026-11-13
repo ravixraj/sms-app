@@ -7,11 +7,19 @@ import { z } from "zod";
 
 export const nameSchema = z.string().trim().min(2).max(50);
 
-export const emailSchema = z.string().trim().toLowerCase().pipe(z.email());
+export const emailSchema = z
+  .string()
+  .trim()
+  .max(254)
+  .toLowerCase()
+  .pipe(z.email());
 
-export const dobSchema = z.coerce.date().refine((date) => date <= new Date(), {
-  error: "Date of birth cannot be in the future",
-});
+export const dobSchema = z.iso
+  .date()
+  .transform((date) => new Date(`${date}T00:00:00Z`))
+  .refine((date) => date <= new Date(), {
+    error: "Date of birth cannot be in the future",
+  });
 
 export const organizationIdSchema = z.preprocess(
   (value) => (value === "" ? null : value),
@@ -20,7 +28,10 @@ export const organizationIdSchema = z.preprocess(
 
 export const avatarSchema = z.preprocess(
   (value) => (value instanceof File && value.size === 0 ? undefined : value),
-  z.instanceof(File).optional(),
+  z
+    .instanceof(File)
+    .refine((file) => file.size <= 80 * 1024, "Avatar must be at most 80 KB")
+    .optional(),
 );
 
 export const strongPassword = z
@@ -51,7 +62,7 @@ export const profileFields = {
   gender: z.enum(GENDER),
   bloodGroup: z.enum(BLOOD_GROUP),
   dob: dobSchema,
-  address: z.string().trim().min(1, { error: "Address is required" }),
+  address: z.string().trim().min(1, { error: "Address is required" }).max(1000),
 };
 
 export const createUserSchema = z
@@ -63,12 +74,10 @@ export const createUserSchema = z
   })
   .refine(
     ({ role, organizationId }) =>
-      role === USER_ROLE.ADMIN
-        ? organizationId == null
-        : organizationId != null,
+      role === USER_ROLE.ADMIN || organizationId != null,
     {
-      error:
-        "ADMIN cannot belong to an organization, and other roles require one",
+      // An admin's organizationId is ignored and stored as null by the route.
+      error: "Non-admin users must belong to an organization",
       path: ["organizationId"],
     },
   );
@@ -83,11 +92,14 @@ export const updateProfileSchema = z
 
 export const loginSchema = z.object({
   email: emailSchema,
-  password: z.string().min(1, { error: "Password is required" }),
+  password: z.string().min(1, { error: "Password is required" }).max(128),
 });
 
 export const refreshTokenSchema = z.object({
-  refreshToken: z.string().min(1, { error: "Refresh token is required" }),
+  refreshToken: z
+    .string()
+    .min(1, { error: "Refresh token is required" })
+    .max(4096),
 });
 
 // ---------------------------------------------------------------------------
@@ -96,7 +108,7 @@ export const refreshTokenSchema = z.object({
 
 export const createOrganizationSchema = z.object({
   name: nameSchema,
-  metadata: z.string().nullish(),
+  metadata: z.string().max(2000).nullish(),
 });
 
 export const organizationIdParamSchema = z.object({

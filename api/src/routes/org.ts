@@ -1,8 +1,7 @@
 import { USER_ROLE } from "#const";
 import { createDb } from "#db/index";
 import { organization, team, teamMember, user } from "#db/schema";
-import { toPublicUser } from "#lib/helper";
-import { HTTP, HttpPhrase, HttpStatus } from "#lib/http";
+import { HTTP, HttpStatus } from "#lib/http";
 import {
   addTeamMemberSchema,
   createOrganizationSchema,
@@ -17,7 +16,7 @@ import {
   verifyPermission,
   type AuthEnv,
 } from "#middleware/auth";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
 
 export default new Hono<AuthEnv>()
@@ -38,10 +37,14 @@ export default new Hono<AuthEnv>()
         })
         .returning();
 
-      return c.json(
-        HTTP.Response(HttpPhrase.CREATED, created),
-        HttpStatus.CREATED,
-      );
+      if (!created) {
+        throw HTTP.error(
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          "Failed to create organization",
+        );
+      }
+
+      return c.json(HTTP.success(created, "Created"), HttpStatus.CREATED);
     },
   )
   .delete(
@@ -58,10 +61,10 @@ export default new Hono<AuthEnv>()
         .returning();
 
       if (!deleted) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Organization not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Organization not found");
       }
 
-      return c.json(HTTP.Response(HttpPhrase.OK, deleted), HttpStatus.OK);
+      return c.json(HTTP.success(deleted), HttpStatus.OK);
     },
   )
   // Teams
@@ -82,7 +85,7 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!existingOrganization) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Organization not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Organization not found");
       }
 
       const [leader] = await db
@@ -96,18 +99,18 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!leader) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Leader not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Leader not found");
       }
 
       if (leader.organizationId !== organizationId) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.BAD_REQUEST,
           "Team leader must be a member of the organization",
         );
       }
 
       if (leader.role !== USER_ROLE.TEACHER) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.BAD_REQUEST,
           "Team leader must be a teacher",
         );
@@ -122,10 +125,14 @@ export default new Hono<AuthEnv>()
         })
         .returning();
 
-      return c.json(
-        HTTP.Response(HttpPhrase.CREATED, created),
-        HttpStatus.CREATED,
-      );
+      if (!created) {
+        throw HTTP.error(
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          "Failed to create team",
+        );
+      }
+
+      return c.json(HTTP.success(created, "Created"), HttpStatus.CREATED);
     },
   )
   // Team members
@@ -149,26 +156,34 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!existingTeam) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Team not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team not found");
       }
 
       const [memberUser] = await db
         .select({
           id: user.id,
           organizationId: user.organizationId,
+          role: user.role,
         })
         .from(user)
         .where(eq(user.id, userId))
         .limit(1);
 
       if (!memberUser) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "User not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
       }
 
       if (memberUser.organizationId !== organizationId) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.BAD_REQUEST,
           "User is not a member of the organization",
+        );
+      }
+
+      if (memberUser.role !== USER_ROLE.STUDENT) {
+        throw HTTP.error(
+          HttpStatus.BAD_REQUEST,
+          "Only students can be added to a class",
         );
       }
 
@@ -180,7 +195,7 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (existing) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.CONFLICT,
           existing.teamId === teamId
             ? "User is already a member of this team"
@@ -196,10 +211,14 @@ export default new Hono<AuthEnv>()
         })
         .returning();
 
-      return c.json(
-        HTTP.Response(HttpPhrase.CREATED, created),
-        HttpStatus.CREATED,
-      );
+      if (!created) {
+        throw HTTP.error(
+          HttpStatus.INTERNAL_SERVER_ERROR,
+          "Failed to add team member",
+        );
+      }
+
+      return c.json(HTTP.success(created, "Created"), HttpStatus.CREATED);
     },
   )
   .get(
@@ -220,26 +239,24 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!existingTeam) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Team not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team not found");
       }
 
+      const account = await db.query.user.findFirst({
+        where: { id: requester.userId },
+        columns: { organizationId: true },
+      });
       const isAdmin = requester.role === USER_ROLE.ADMIN;
-      let isOrganizationPrincipal = false;
-
-      if (requester.role === USER_ROLE.PRINCIPAL) {
-        const [principal] = await db
-          .select({ organizationId: user.organizationId })
-          .from(user)
-          .where(eq(user.id, requester.userId))
-          .limit(1);
-
-        isOrganizationPrincipal = principal?.organizationId === organizationId;
-      }
-
-      const isTeamLeader = existingTeam.leaderId === requester.userId;
+      const isOrganizationPrincipal =
+        requester.role === USER_ROLE.PRINCIPAL &&
+        account?.organizationId === organizationId;
+      const isTeamLeader =
+        requester.role === USER_ROLE.TEACHER &&
+        account?.organizationId === organizationId &&
+        existingTeam.leaderId === requester.userId;
 
       if (!isAdmin && !isOrganizationPrincipal && !isTeamLeader) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.FORBIDDEN,
           "Only administrators, principals of this organization, or the team leader can view team members",
         );
@@ -257,9 +274,15 @@ export default new Hono<AuthEnv>()
         })
         .from(teamMember)
         .innerJoin(user, eq(teamMember.userId, user.id))
-        .where(eq(teamMember.teamId, teamId));
+        .where(
+          and(
+            eq(teamMember.teamId, teamId),
+            eq(user.organizationId, organizationId),
+            eq(user.role, USER_ROLE.STUDENT),
+          ),
+        );
 
-      return c.json(HTTP.Response(HttpPhrase.OK, members), HttpStatus.OK);
+      return c.json(HTTP.success(members), HttpStatus.OK);
     },
   )
   .delete(
@@ -280,11 +303,11 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!existingTeam) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Team not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team not found");
       }
 
       if (existingTeam.leaderId === userId) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.CONFLICT,
           "Reassign team leadership before removing the leader",
         );
@@ -298,9 +321,9 @@ export default new Hono<AuthEnv>()
         .returning();
 
       if (!deleted) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "Team member not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team member not found");
       }
 
-      return c.json(HTTP.Response(HttpPhrase.OK, deleted), HttpStatus.OK);
+      return c.json(HTTP.success(deleted), HttpStatus.OK);
     },
   );

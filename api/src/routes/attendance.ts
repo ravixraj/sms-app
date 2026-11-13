@@ -1,7 +1,7 @@
 import { ATTENDANCE_STATUSES, USER_ROLE } from "#const";
 import { createDb } from "#db/index";
 import { attendance, team, teamMember, user } from "#db/schema";
-import { HTTP, HttpPhrase, HttpStatus } from "#lib/http";
+import { HTTP, HttpStatus } from "#lib/http";
 import {
   attendanceQuerySchema,
   classQuerySchema,
@@ -50,15 +50,28 @@ export default new Hono<AuthEnv>()
       const db = createDb(c.env.DATABASE_URL);
       const { teamId, date, records } = c.req.valid("json");
       const teacher = c.get("user");
+      const account = await db.query.user.findFirst({
+        where: { id: teacher.userId },
+        columns: { organizationId: true },
+      });
+      const organizationId = account?.organizationId;
+      if (!organizationId)
+        throw HTTP.error(HttpStatus.FORBIDDEN, "No organization assigned");
 
       const [ledTeam] = await db
         .select({ id: team.id })
         .from(team)
-        .where(and(eq(team.id, teamId), eq(team.leaderId, teacher.userId)))
+        .where(
+          and(
+            eq(team.id, teamId),
+            eq(team.leaderId, teacher.userId),
+            eq(team.organizationId, organizationId),
+          ),
+        )
         .limit(1);
 
       if (!ledTeam) {
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.FORBIDDEN,
           "You are not the class in-charge of this team",
         );
@@ -70,10 +83,13 @@ export default new Hono<AuthEnv>()
       const classMembers = await db
         .select({ userId: teamMember.userId })
         .from(teamMember)
+        .innerJoin(user, eq(teamMember.userId, user.id))
         .where(
           and(
             eq(teamMember.teamId, teamId),
             inArray(teamMember.userId, userIds),
+            eq(user.organizationId, organizationId),
+            eq(user.role, USER_ROLE.STUDENT),
           ),
         );
 
@@ -81,7 +97,7 @@ export default new Hono<AuthEnv>()
         const memberIds = new Set(classMembers.map((member) => member.userId));
         const notInClass = userIds.filter((id) => !memberIds.has(id));
 
-        throw HTTP.Error(
+        throw HTTP.error(
           HttpStatus.FORBIDDEN,
           `These users are not in your class: ${notInClass.join(", ")}`,
         );
@@ -109,7 +125,7 @@ export default new Hono<AuthEnv>()
         .returning();
 
       return c.json(
-        HTTP.Response(HttpPhrase.OK, {
+        HTTP.success({
           teamId,
           date,
           count: marked.length,
@@ -128,18 +144,30 @@ export default new Hono<AuthEnv>()
       const db = createDb(c.env.DATABASE_URL);
       const { date } = c.req.valid("query");
       const teacher = c.get("user");
+      const account = await db.query.user.findFirst({
+        where: { id: teacher.userId },
+        columns: { organizationId: true },
+      });
+      const organizationId = account?.organizationId;
+      if (!organizationId)
+        throw HTTP.error(HttpStatus.FORBIDDEN, "No organization assigned");
 
       // TEACHERs always belong to an organization, and their scope is the
       // teams they lead — no separate user/org lookup needed.
       const ledTeams = await db
         .select({ id: team.id, name: team.name })
         .from(team)
-        .where(eq(team.leaderId, teacher.userId))
+        .where(
+          and(
+            eq(team.leaderId, teacher.userId),
+            eq(team.organizationId, organizationId),
+          ),
+        )
         .orderBy(team.name);
 
       if (ledTeams.length === 0) {
         return c.json(
-          HTTP.Response(HttpPhrase.OK, { classes: [] }),
+          HTTP.success({ date: date ?? null, classes: [] }),
           HttpStatus.OK,
         );
       }
@@ -155,9 +183,13 @@ export default new Hono<AuthEnv>()
         .from(teamMember)
         .innerJoin(user, eq(teamMember.userId, user.id))
         .where(
-          inArray(
-            teamMember.teamId,
-            ledTeams.map((ledTeam) => ledTeam.id),
+          and(
+            eq(user.organizationId, organizationId),
+            eq(user.role, USER_ROLE.STUDENT),
+            inArray(
+              teamMember.teamId,
+              ledTeams.map((ledTeam) => ledTeam.id),
+            ),
           ),
         )
         .orderBy(user.name);
@@ -209,7 +241,7 @@ export default new Hono<AuthEnv>()
       }));
 
       return c.json(
-        HTTP.Response(HttpPhrase.OK, { date: date ?? null, classes }),
+        HTTP.success({ date: date ?? null, classes }),
         HttpStatus.OK,
       );
     },
@@ -237,20 +269,18 @@ export default new Hono<AuthEnv>()
         .limit(1);
 
       if (!targetUser) {
-        throw HTTP.Error(HttpStatus.NOT_FOUND, "User not found");
+        throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
       }
 
       // Anyone can read their own attendance. ADMINs can read anyone's,
       // principals can read anyone in their organization, and a TEACHER (class
       // in-charge) can only read members of the team(s) they lead.
       if (requester.userId !== userId && requester.role !== USER_ROLE.ADMIN) {
-        const [requesterRecord] = await db
-          .select({ organizationId: user.organizationId })
-          .from(user)
-          .where(eq(user.id, requester.userId))
-          .limit(1);
-
-        const organizationId = requesterRecord?.organizationId;
+        const account = await db.query.user.findFirst({
+          where: { id: requester.userId },
+          columns: { organizationId: true },
+        });
+        const organizationId = account?.organizationId;
 
         const sameOrganization =
           organizationId != null &&
@@ -288,7 +318,7 @@ export default new Hono<AuthEnv>()
         }
 
         if (!canViewOthers) {
-          throw HTTP.Error(
+          throw HTTP.error(
             HttpStatus.FORBIDDEN,
             "You are not allowed to view this user's attendance",
           );
@@ -349,7 +379,7 @@ export default new Hono<AuthEnv>()
       }
 
       return c.json(
-        HTTP.Response(HttpPhrase.OK, {
+        HTTP.success({
           user: targetUser,
           range: { from: from ?? null, to: to ?? null },
           pagination: { total: summary.total, limit, offset },

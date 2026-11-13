@@ -1,7 +1,13 @@
 import { getPgErrorCode } from "#db/index";
-import { HTTP, HttpStatus } from "#lib/http";
+import {
+  HTTP,
+  HttpStatus,
+  type ApiError,
+  type ApiErrorStatus,
+} from "#lib/http";
 import type { AuthEnv } from "#middleware/auth";
 import { Hono } from "hono";
+import type { ApplyGlobalResponse } from "hono/client";
 import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
@@ -40,11 +46,10 @@ const app = new Hono<AuthEnv>({
   )
   .use(
     bodyLimit({
-      // Large enough for phone photos used as avatars.
-      maxSize: 5 * 1024 * 1024,
+      maxSize: 100 * 1024, // 100kb
       onError: (c) =>
         c.json(
-          HTTP.Response("Request body exceeds the 5 MB limit", null, false),
+          HTTP.failure("Request body exceeds the 100 KB limit"),
           HttpStatus.PAYLOAD_TOO_LARGE,
         ),
     }),
@@ -54,7 +59,7 @@ const app = new Hono<AuthEnv>({
   .route("/attendance", attendanceRouter)
   .notFound((c) =>
     c.json(
-      HTTP.Response("The requested route was not found", null, false),
+      HTTP.failure("The requested route was not found"),
       HttpStatus.NOT_FOUND,
     ),
   )
@@ -63,47 +68,52 @@ const app = new Hono<AuthEnv>({
 
     if (err instanceof HTTPException) {
       if (err.status >= HttpStatus.INTERNAL_SERVER_ERROR) {
-        console.error(`[${c.get("requestId")}]`, err);
+        console.error({ requestId: c.get("requestId"), status: err.status });
       }
 
-      return c.json(HTTP.Response(err.message, null, false), err.status);
+      return c.json(
+        HTTP.failure(err.status >= 500 ? "Internal server error" : err.message),
+        err.status,
+      );
     }
 
     const databaseCode = getPgErrorCode(err);
 
     if (databaseCode === "23505") {
       return c.json(
-        HTTP.Response(
-          "A record with the same value already exists",
-          null,
-          false,
-        ),
+        HTTP.failure("A record with the same value already exists"),
         HttpStatus.CONFLICT,
       );
     }
 
     if (databaseCode === "23503") {
       return c.json(
-        HTTP.Response("A related record does not exist", null, false),
+        HTTP.failure("A related record does not exist"),
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (databaseCode === "23514") {
       return c.json(
-        HTTP.Response("The request violates a data constraint", null, false),
+        HTTP.failure("The request violates a data constraint"),
         HttpStatus.BAD_REQUEST,
       );
     }
 
-    console.error(`[${c.get("requestId")}]`, err);
+    console.error({
+      requestId: c.get("requestId"),
+      error: err?.name ?? "UnknownError",
+    });
 
     return c.json(
-      HTTP.Response("Internal server error", null, false),
+      HTTP.failure("Internal server error"),
       HttpStatus.INTERNAL_SERVER_ERROR,
     );
   });
 
-export type AppType = typeof app;
+export type AppType = ApplyGlobalResponse<
+  typeof app,
+  { [Status in ApiErrorStatus]: { json: ApiError } }
+>;
 
 export default app;
