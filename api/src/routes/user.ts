@@ -1,19 +1,13 @@
 import { USER_ROLE } from "#const";
 import { createDb, getPgErrorCode } from "#db/index";
 import { user } from "#db/schema";
-import {
-  generateAccessAndRefreshTokens,
-  hashPassword,
-  passwordMatch,
-  toPublicUser,
-} from "#lib/helper";
-import { HTTP, HttpStatus } from "#lib/http";
+import { hashPassword, passwordMatch, signToken } from "#lib/helper";
+import { HTTP, HttpStatus, type ApiError } from "#lib/http";
 import { deleteAvatar, uploadAvatar } from "#lib/r2";
 import {
   createUserSchema,
   loginSchema,
   refreshTokenSchema,
-  updateProfileSchema,
 } from "#lib/validation";
 import { zValidator } from "#lib/zValidator";
 import {
@@ -23,32 +17,33 @@ import {
 } from "#middleware/auth";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { verify } from "hono/jwt";
 import type { JWTPayload } from "hono/utils/jwt/types";
 
 type Db = ReturnType<typeof createDb>;
 type UserRecord = typeof user.$inferSelect;
+type PublicUser = Omit<UserRecord, "password" | "refreshToken">;
 
 /** Creates a token pair and stores the refresh token on the user row. */
-const issueSession = async (db: Db, env: Env, userRecord: UserRecord) => {
-  const tokens = await generateAccessAndRefreshTokens(
-    { userId: userRecord.id, role: userRecord.role },
-    {
-      accessSecret: env.ACCESS_TOKEN_SECRET,
-      accessExpiry: env.ACCESS_TOKEN_EXPIRY,
-      refreshSecret: env.REFRESH_TOKEN_SECRET,
-      refreshExpiry: env.REFRESH_TOKEN_EXPIRY,
-    },
-  );
+const issueSession = async (db: Db, env: Env, publicUser: PublicUser) => {
+  const payload: JWTPayload = {
+    userId: publicUser.id,
+    role: publicUser.role,
+    organizationId: publicUser.organizationId,
+  };
 
-  await db
-    .update(user)
-    .set({ refreshToken: tokens.refreshToken })
-    .where(eq(user.id, userRecord.id));
+  const [accessToken, refreshToken] = await Promise.all([
+    signToken(payload, env.ACCESS_TOKEN_SECRET, env.ACCESS_TOKEN_EXPIRY),
+    signToken(payload, env.REFRESH_TOKEN_SECRET, env.REFRESH_TOKEN_EXPIRY),
+  ]);
+
+  await db.update(user).set({ refreshToken }).where(eq(user.id, publicUser.id));
 
   return {
-    user: toPublicUser(userRecord),
-    ...tokens,
+    user: publicUser,
+    accessToken,
+    refreshToken,
   };
 };
 
@@ -59,13 +54,16 @@ export default new Hono<AuthEnv>()
 
     const userRecord = await db.query.user.findFirst({
       where: { email },
+      columns: { refreshToken: false },
     });
 
     if (!userRecord || !(await passwordMatch(password, userRecord.password))) {
       throw HTTP.error(HttpStatus.UNAUTHORIZED, "Invalid email or password");
     }
 
-    const session = await issueSession(db, c.env, userRecord);
+    const { password: _password, ...publicUser } = userRecord;
+
+    const session = await issueSession(db, c.env, publicUser);
 
     return c.json(HTTP.success(session), HttpStatus.OK);
   })
@@ -93,10 +91,11 @@ export default new Hono<AuthEnv>()
     }
 
     const userRecord = await db.query.user.findFirst({
-      where: { id: payload.userId },
+      where: { id: payload.userId, refreshToken },
+      columns: { password: false, refreshToken: false },
     });
 
-    if (!userRecord || userRecord.refreshToken !== refreshToken) {
+    if (!userRecord) {
       throw HTTP.error(
         HttpStatus.UNAUTHORIZED,
         "Invalid or expired refresh token",
@@ -120,6 +119,17 @@ export default new Hono<AuthEnv>()
   })
   .post(
     "/users",
+    bodyLimit({
+      maxSize: 100 * 1024, // 100kb
+      onError: (c) =>
+        c.json(
+          {
+            success: false,
+            message: "Request body exceeds the 100 KB limit",
+          } satisfies ApiError,
+          HttpStatus.PAYLOAD_TOO_LARGE,
+        ),
+    }),
     authMiddleware,
     verifyPermission([USER_ROLE.ADMIN]),
     zValidator("form", createUserSchema),
@@ -197,14 +207,6 @@ export default new Hono<AuthEnv>()
 
         const databaseCode = getPgErrorCode(error);
 
-        if (databaseCode === "23505") {
-          throw HTTP.error(
-            HttpStatus.CONFLICT,
-            "A user with this email already exists",
-            error,
-          );
-        }
-
         if (databaseCode === "23503") {
           throw HTTP.error(
             HttpStatus.NOT_FOUND,
@@ -216,18 +218,28 @@ export default new Hono<AuthEnv>()
         throw error;
       }
 
+      const {
+        password: _password,
+        refreshToken: _refreshToken,
+        ...publicUser
+      } = newUser;
+
       return c.json(
-        HTTP.success({ user: toPublicUser(newUser) }, "Created"),
+        HTTP.success({ user: publicUser }, "Created"),
         HttpStatus.CREATED,
       );
     },
   )
-  .get("/users/me", authMiddleware, async (c) => {
+  .get("/user/me", authMiddleware, async (c) => {
     const db = createDb(c.env.DATABASE_URL);
     const { userId } = c.get("user");
 
     const userRecord = await db.query.user.findFirst({
       where: { id: userId },
+      columns: {
+        password: false,
+        refreshToken: false,
+      },
       with: {
         organization: true,
         teamMember: {
@@ -242,93 +254,5 @@ export default new Hono<AuthEnv>()
       throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
     }
 
-    return c.json(
-      HTTP.success({ user: toPublicUser(userRecord) }),
-      HttpStatus.OK,
-    );
-  })
-  .patch(
-    "/users/me",
-    authMiddleware,
-    zValidator("form", updateProfileSchema),
-    async (c) => {
-      const db = createDb(c.env.DATABASE_URL);
-      const { userId } = c.get("user");
-      const data = c.req.valid("form");
-
-      const [existing] = await db
-        .select({ avatar: user.avatar })
-        .from(user)
-        .where(eq(user.id, userId))
-        .limit(1);
-
-      if (!existing) {
-        throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
-      }
-
-      const uploadedAvatar = data.avatar
-        ? await uploadAvatar(
-            c.env.USER_AVATARS,
-            data.avatar,
-            c.env.AVATAR_PUBLIC_URL,
-          )
-        : null;
-
-      let updatedUser: UserRecord | undefined;
-
-      try {
-        [updatedUser] = await db
-          .update(user)
-          .set({
-            name: data.name,
-            gender: data.gender,
-            bloodGroup: data.bloodGroup,
-            dob: data.dob,
-            avatar: uploadedAvatar?.url,
-            address: data.address,
-          })
-          .where(eq(user.id, userId))
-          .returning();
-      } catch (error) {
-        if (uploadedAvatar) {
-          await deleteAvatar(
-            c.env.USER_AVATARS,
-            uploadedAvatar.key,
-            c.env.AVATAR_PUBLIC_URL,
-          );
-        }
-
-        throw error;
-      }
-
-      if (!updatedUser) {
-        if (uploadedAvatar) {
-          await deleteAvatar(
-            c.env.USER_AVATARS,
-            uploadedAvatar.key,
-            c.env.AVATAR_PUBLIC_URL,
-          );
-        }
-
-        throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
-      }
-
-      // Delete the old avatar only after the database update succeeds.
-      if (
-        uploadedAvatar &&
-        existing.avatar &&
-        existing.avatar !== uploadedAvatar.url
-      ) {
-        await deleteAvatar(
-          c.env.USER_AVATARS,
-          existing.avatar,
-          c.env.AVATAR_PUBLIC_URL,
-        );
-      }
-
-      return c.json(
-        HTTP.success({ user: toPublicUser(updatedUser) }),
-        HttpStatus.OK,
-      );
-    },
-  );
+    return c.json(HTTP.success({ user: userRecord }), HttpStatus.OK);
+  });

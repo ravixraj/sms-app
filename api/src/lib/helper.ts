@@ -76,7 +76,7 @@ export const passwordMatch = async (
   }
 };
 
-const signToken = (
+export const signToken = (
   payload: JWTPayload,
   secret: string,
   expiry: string | number,
@@ -90,32 +90,4 @@ const signToken = (
   const now = Math.floor(Date.now() / 1000);
 
   return sign({ ...payload, iat: now, exp: now + seconds }, secret);
-};
-
-/** Removes fields that must never be sent to a client. */
-export const toPublicUser = <
-  T extends { password: string; refreshToken: string | null },
->(
-  record: T,
-) => {
-  const { password: _password, refreshToken: _refreshToken, ...user } = record;
-
-  return user;
-};
-
-export const generateAccessAndRefreshTokens = async (
-  payload: JWTPayload,
-  secrets: {
-    accessSecret: string;
-    accessExpiry: string;
-    refreshSecret: string;
-    refreshExpiry: string;
-  },
-) => {
-  const [accessToken, refreshToken] = await Promise.all([
-    signToken(payload, secrets.accessSecret, secrets.accessExpiry),
-    signToken(payload, secrets.refreshSecret, secrets.refreshExpiry),
-  ]);
-
-  return { accessToken, refreshToken };
 };

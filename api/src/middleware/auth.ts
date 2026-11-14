@@ -1,4 +1,4 @@
-import { isUserRole, type UserRole } from "#const";
+import { USER_ROLES, type UserRole } from "#const";
 import { HTTP, HttpStatus } from "#lib/http";
 import { createFactory } from "hono/factory";
 import { verify, type JwtVariables } from "hono/jwt";
@@ -7,6 +7,8 @@ import type { JWTPayload } from "hono/utils/jwt/types";
 export type AuthUser = {
   userId: string;
   role: UserRole;
+  /** Null for ADMIN users, who are not scoped to an organization. */
+  organizationId: string | null;
 };
 
 export type AuthEnv = {
@@ -44,11 +46,18 @@ export const authMiddleware = factory.defineMiddleware(async (c, next) => {
     );
   }
 
-  if (typeof payload.userId !== "string" || !isUserRole(payload.role)) {
+  const { userId, role, organizationId } = payload;
+
+  if (
+    typeof userId !== "string" ||
+    typeof role !== "string" ||
+    !USER_ROLES.includes(role as UserRole) ||
+    !(typeof organizationId === "string" || organizationId === null)
+  ) {
     throw HTTP.error(HttpStatus.UNAUTHORIZED, "Invalid access token payload");
   }
 
-  c.set("user", { userId: payload.userId, role: payload.role });
+  c.set("user", { userId, role: role as UserRole, organizationId });
 
   await next();
 });

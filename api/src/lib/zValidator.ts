@@ -1,7 +1,7 @@
 import { zValidator as validate } from "@hono/zod-validator";
 import type { ValidationTargets } from "hono";
 import type { ZodType } from "zod";
-import { HTTP, HttpStatus } from "./http";
+import { HttpStatus, type ApiError } from "./http";
 
 export const zValidator = <
   T extends ZodType,
@@ -16,7 +16,10 @@ export const zValidator = <
     const path = issue?.path.join(".");
     const message = issue?.message ?? "Invalid request data";
     return c.json(
-      HTTP.failure(path ? `${path}: ${message}` : message),
+      {
+        success: false,
+        message: path ? `${path}: ${message}` : message,
+      } satisfies ApiError,
       HttpStatus.UNPROCESSABLE_ENTITY,
     );
   });

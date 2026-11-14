@@ -8,10 +8,7 @@ export const USER_ROLE = {
 
 export type UserRole = (typeof USER_ROLE)[keyof typeof USER_ROLE];
 
-const USER_ROLES = Object.values(USER_ROLE);
-
-export const isUserRole = (value: unknown): value is UserRole =>
-  typeof value === "string" && USER_ROLES.includes(value as UserRole);
+export const USER_ROLES = Object.values(USER_ROLE);
 
 export const GENDER = {
   MALE: "MALE",

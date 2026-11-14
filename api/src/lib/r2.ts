@@ -30,10 +30,10 @@ export const uploadAvatar = async (
       "Avatar hosting is not configured",
     );
   }
-  if (file.size === 0 || file.size > 80 * 1024) {
+  if (file.size === 0 || file.size > 100 * 1024) {
     throw HTTP.error(
       HttpStatus.BAD_REQUEST,
-      "Avatar must be between 1 byte and 80 KB",
+      "Avatar must be between 1 byte and 100 KB",
     );
   }
   const bytes = new Uint8Array(await file.slice(0, 12).arrayBuffer());

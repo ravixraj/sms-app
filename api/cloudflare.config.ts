@@ -13,8 +13,10 @@ export default defineConfig({
       ACCESS_TOKEN_EXPIRY: bindings.text("1800"),
       REFRESH_TOKEN_SECRET: bindings.secret(),
       REFRESH_TOKEN_EXPIRY: bindings.text("1209600"),
-      USER_AVATARS: bindings.r2(),
-      AVATAR_PUBLIC_URL: bindings.text(""),
+      USER_AVATARS: bindings.r2({ name: "useravatar" }),
+      AVATAR_PUBLIC_URL: bindings.text(
+        "https://pub-af563645b2cd4a4f88b7a9b53e81765a.r2.dev",
+      ),
     },
   },
 });

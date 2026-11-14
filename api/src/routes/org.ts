@@ -6,9 +6,11 @@ import {
   addTeamMemberSchema,
   createOrganizationSchema,
   createTeamSchema,
-  organizationIdParamSchema,
-  organizationTeamParamSchema,
+  deleteOrganizationSchema,
+  deleteTeamMemberSchema,
   teamMemberParamSchema,
+  teamMembersQuerySchema,
+  updateTeamSchema,
 } from "#lib/validation";
 import { zValidator } from "#lib/zValidator";
 import {
@@ -18,6 +20,42 @@ import {
 } from "#middleware/auth";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
+
+type Db = ReturnType<typeof createDb>;
+
+/** Ensures a team leader exists, belongs to the organization, and is a teacher. */
+const verifyTeamLeader = async (
+  db: Db,
+  leaderId: string,
+  organizationId: string,
+) => {
+  const [leader] = await db
+    .select({
+      id: user.id,
+      organizationId: user.organizationId,
+      role: user.role,
+    })
+    .from(user)
+    .where(eq(user.id, leaderId))
+    .limit(1);
+
+  if (!leader) {
+    throw HTTP.error(HttpStatus.NOT_FOUND, "Leader not found");
+  }
+
+  if (leader.organizationId !== organizationId) {
+    throw HTTP.error(
+      HttpStatus.BAD_REQUEST,
+      "Team leader must be a member of the organization",
+    );
+  }
+
+  if (leader.role !== USER_ROLE.TEACHER) {
+    throw HTTP.error(HttpStatus.BAD_REQUEST, "Team leader must be a teacher");
+  }
+
+  return leader;
+};
 
 export default new Hono<AuthEnv>()
   .use(authMiddleware)
@@ -48,12 +86,12 @@ export default new Hono<AuthEnv>()
     },
   )
   .delete(
-    "/:organizationId",
+    "/",
     verifyPermission([USER_ROLE.ADMIN]),
-    zValidator("param", organizationIdParamSchema),
+    zValidator("json", deleteOrganizationSchema),
     async (c) => {
       const db = createDb(c.env.DATABASE_URL);
-      const { organizationId } = c.req.valid("param");
+      const { organizationId } = c.req.valid("json");
 
       const [deleted] = await db
         .delete(organization)
@@ -67,16 +105,13 @@ export default new Hono<AuthEnv>()
       return c.json(HTTP.success(deleted), HttpStatus.OK);
     },
   )
-  // Teams
   .post(
-    "/:organizationId/teams",
+    "/team",
     verifyPermission([USER_ROLE.ADMIN]),
-    zValidator("param", organizationIdParamSchema),
     zValidator("json", createTeamSchema),
     async (c) => {
       const db = createDb(c.env.DATABASE_URL);
-      const { organizationId } = c.req.valid("param");
-      const { name, leaderId } = c.req.valid("json");
+      const { organizationId, name, leaderId } = c.req.valid("json");
 
       const [existingOrganization] = await db
         .select({ id: organization.id })
@@ -88,33 +123,7 @@ export default new Hono<AuthEnv>()
         throw HTTP.error(HttpStatus.NOT_FOUND, "Organization not found");
       }
 
-      const [leader] = await db
-        .select({
-          id: user.id,
-          organizationId: user.organizationId,
-          role: user.role,
-        })
-        .from(user)
-        .where(eq(user.id, leaderId))
-        .limit(1);
-
-      if (!leader) {
-        throw HTTP.error(HttpStatus.NOT_FOUND, "Leader not found");
-      }
-
-      if (leader.organizationId !== organizationId) {
-        throw HTTP.error(
-          HttpStatus.BAD_REQUEST,
-          "Team leader must be a member of the organization",
-        );
-      }
-
-      if (leader.role !== USER_ROLE.TEACHER) {
-        throw HTTP.error(
-          HttpStatus.BAD_REQUEST,
-          "Team leader must be a teacher",
-        );
-      }
+      await verifyTeamLeader(db, leaderId, organizationId);
 
       const [created] = await db
         .insert(team)
@@ -135,24 +144,68 @@ export default new Hono<AuthEnv>()
       return c.json(HTTP.success(created, "Created"), HttpStatus.CREATED);
     },
   )
-  // Team members
-  .post(
-    "/:organizationId/teams/:teamId/members",
+  .patch(
+    "/team",
     verifyPermission([USER_ROLE.ADMIN]),
-    zValidator("param", organizationTeamParamSchema),
-    zValidator("json", addTeamMemberSchema),
+    zValidator("json", updateTeamSchema),
     async (c) => {
       const db = createDb(c.env.DATABASE_URL);
-      const { organizationId, teamId } = c.req.valid("param");
-      const { userId } = c.req.valid("json");
+      const { organizationId, teamId, name, leaderId } = c.req.valid("json");
 
-      // Existence check only — no need for the full team row.
       const [existingTeam] = await db
         .select({ id: team.id })
         .from(team)
         .where(
           and(eq(team.id, teamId), eq(team.organizationId, organizationId)),
         )
+        .limit(1);
+
+      if (!existingTeam) {
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team not found");
+      }
+
+      if (leaderId !== undefined) {
+        await verifyTeamLeader(db, leaderId, organizationId);
+      }
+
+      const updates: Partial<typeof team.$inferInsert> = {};
+
+      if (name !== undefined) {
+        updates.name = name;
+      }
+
+      if (leaderId !== undefined) {
+        updates.leaderId = leaderId;
+      }
+
+      const [updated] = await db
+        .update(team)
+        .set(updates)
+        .where(
+          and(eq(team.id, teamId), eq(team.organizationId, organizationId)),
+        )
+        .returning();
+
+      if (!updated) {
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team not found");
+      }
+
+      return c.json(HTTP.success(updated, "Updated"), HttpStatus.OK);
+    },
+  )
+  .post(
+    "/team/member",
+    verifyPermission([USER_ROLE.ADMIN]),
+    zValidator("json", addTeamMemberSchema),
+    async (c) => {
+      const db = createDb(c.env.DATABASE_URL);
+      const { teamId, userId } = c.req.valid("json");
+
+      // organizationId is needed to verify the user belongs to the same org.
+      const [existingTeam] = await db
+        .select({ id: team.id, organizationId: team.organizationId })
+        .from(team)
+        .where(eq(team.id, teamId))
         .limit(1);
 
       if (!existingTeam) {
@@ -173,7 +226,7 @@ export default new Hono<AuthEnv>()
         throw HTTP.error(HttpStatus.NOT_FOUND, "User not found");
       }
 
-      if (memberUser.organizationId !== organizationId) {
+      if (memberUser.organizationId !== existingTeam.organizationId) {
         throw HTTP.error(
           HttpStatus.BAD_REQUEST,
           "User is not a member of the organization",
@@ -222,11 +275,11 @@ export default new Hono<AuthEnv>()
     },
   )
   .get(
-    "/:organizationId/teams/:teamId/members",
-    zValidator("param", organizationTeamParamSchema),
+    "/team/member",
+    zValidator("query", teamMembersQuerySchema),
     async (c) => {
       const db = createDb(c.env.DATABASE_URL);
-      const { organizationId, teamId } = c.req.valid("param");
+      const { organizationId, teamId } = c.req.valid("query");
       const requester = c.get("user");
 
       // Only leaderId is needed for the permission check.
@@ -286,27 +339,32 @@ export default new Hono<AuthEnv>()
     },
   )
   .delete(
-    "/:organizationId/teams/:teamId/members/:userId",
+    "/team/member/:userId",
     verifyPermission([USER_ROLE.ADMIN]),
     zValidator("param", teamMemberParamSchema),
+    zValidator("json", deleteTeamMemberSchema),
     async (c) => {
       const db = createDb(c.env.DATABASE_URL);
-      const { organizationId, teamId, userId } = c.req.valid("param");
+      const { userId } = c.req.valid("param");
+      const { organizationId } = c.req.valid("json");
 
-      // Only leaderId is needed for the leadership check.
-      const [existingTeam] = await db
-        .select({ leaderId: team.leaderId })
-        .from(team)
-        .where(
-          and(eq(team.id, teamId), eq(team.organizationId, organizationId)),
-        )
+      // The membership row identifies the team, so teamId is not needed.
+      const [existingMember] = await db
+        .select({
+          teamId: teamMember.teamId,
+          organizationId: team.organizationId,
+          leaderId: team.leaderId,
+        })
+        .from(teamMember)
+        .innerJoin(team, eq(teamMember.teamId, team.id))
+        .where(eq(teamMember.userId, userId))
         .limit(1);
 
-      if (!existingTeam) {
-        throw HTTP.error(HttpStatus.NOT_FOUND, "Team not found");
+      if (!existingMember || existingMember.organizationId !== organizationId) {
+        throw HTTP.error(HttpStatus.NOT_FOUND, "Team member not found");
       }
 
-      if (existingTeam.leaderId === userId) {
+      if (existingMember.leaderId === userId) {
         throw HTTP.error(
           HttpStatus.CONFLICT,
           "Reassign team leadership before removing the leader",
@@ -316,7 +374,10 @@ export default new Hono<AuthEnv>()
       const [deleted] = await db
         .delete(teamMember)
         .where(
-          and(eq(teamMember.teamId, teamId), eq(teamMember.userId, userId)),
+          and(
+            eq(teamMember.teamId, existingMember.teamId),
+            eq(teamMember.userId, userId),
+          ),
         )
         .returning();
 

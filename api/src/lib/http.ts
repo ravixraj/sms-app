@@ -29,16 +29,17 @@ export const HttpStatus = {
 } as const;
 
 export type ApiSuccess<T> = { success: true; message: string; data: T };
-export type ApiError = { success: false; message: string; data: null };
+/**
+ * Error response body. Build it directly and check it with `satisfies ApiError`.
+ * Route handlers throw `HTTP.error(...)`; `onError`/`notFound` return this shape.
+ */
+export type ApiError = { success: false; message: string };
 export type ApiResponse<T> = ApiSuccess<T> | ApiError;
 export type ApiErrorStatus = ClientErrorStatusCode | ServerErrorStatusCode;
 
 export const HTTP = {
   success<T>(data: T, message = "OK"): ApiSuccess<T> {
     return { success: true, message, data };
-  },
-  failure(message: string): ApiError {
-    return { success: false, message, data: null };
   },
   error(status: ApiErrorStatus, message: string, error?: unknown) {
     return new HTTPException(status, { message, cause: error });

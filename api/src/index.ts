@@ -1,14 +1,8 @@
 import { getPgErrorCode } from "#db/index";
-import {
-  HTTP,
-  HttpStatus,
-  type ApiError,
-  type ApiErrorStatus,
-} from "#lib/http";
+import { HttpStatus, type ApiError, type ApiErrorStatus } from "#lib/http";
 import type { AuthEnv } from "#middleware/auth";
 import { Hono } from "hono";
 import type { ApplyGlobalResponse } from "hono/client";
-import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { logger } from "hono/logger";
@@ -44,22 +38,15 @@ const app = new Hono<AuthEnv>({
       strictTransportSecurity: "max-age=31536000; includeSubDomains",
     }),
   )
-  .use(
-    bodyLimit({
-      maxSize: 100 * 1024, // 100kb
-      onError: (c) =>
-        c.json(
-          HTTP.failure("Request body exceeds the 100 KB limit"),
-          HttpStatus.PAYLOAD_TOO_LARGE,
-        ),
-    }),
-  )
   .route("/", userRouter)
   .route("/org", orgRouter)
   .route("/attendance", attendanceRouter)
   .notFound((c) =>
     c.json(
-      HTTP.failure("The requested route was not found"),
+      {
+        success: false,
+        message: "The requested route was not found",
+      } satisfies ApiError,
       HttpStatus.NOT_FOUND,
     ),
   )
@@ -72,7 +59,10 @@ const app = new Hono<AuthEnv>({
       }
 
       return c.json(
-        HTTP.failure(err.status >= 500 ? "Internal server error" : err.message),
+        {
+          success: false,
+          message: err.status >= 500 ? "Internal server error" : err.message,
+        } satisfies ApiError,
         err.status,
       );
     }
@@ -81,21 +71,30 @@ const app = new Hono<AuthEnv>({
 
     if (databaseCode === "23505") {
       return c.json(
-        HTTP.failure("A record with the same value already exists"),
+        {
+          success: false,
+          message: "A record with the same value already exists",
+        } satisfies ApiError,
         HttpStatus.CONFLICT,
       );
     }
 
     if (databaseCode === "23503") {
       return c.json(
-        HTTP.failure("A related record does not exist"),
+        {
+          success: false,
+          message: "A related record does not exist",
+        } satisfies ApiError,
         HttpStatus.BAD_REQUEST,
       );
     }
 
     if (databaseCode === "23514") {
       return c.json(
-        HTTP.failure("The request violates a data constraint"),
+        {
+          success: false,
+          message: "The request violates a data constraint",
+        } satisfies ApiError,
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -106,7 +105,10 @@ const app = new Hono<AuthEnv>({
     });
 
     return c.json(
-      HTTP.failure("Internal server error"),
+      {
+        success: false,
+        message: "Internal server error",
+      } satisfies ApiError,
       HttpStatus.INTERNAL_SERVER_ERROR,
     );
   });

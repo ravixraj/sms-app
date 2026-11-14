@@ -5,32 +5,45 @@ import { z } from "zod";
 // Shared building blocks
 // ---------------------------------------------------------------------------
 
-export const nameSchema = z.string().trim().min(2).max(50);
+export const nameSchema = z
+  .string({ error: "Name must be text" })
+  .trim()
+  .min(2, { error: "Name must be at least 2 characters long" })
+  .max(50, { error: "Name must be at most 50 characters long" });
+
+export const profileNameSchema = z
+  .string({ error: "Name must be text" })
+  .trim()
+  .min(2, { error: "Name must be at least 2 characters long" })
+  .max(100, { error: "Name must be at most 100 characters long" });
 
 export const emailSchema = z
-  .string()
+  .string({ error: "Email must be text" })
   .trim()
-  .max(254)
+  .max(254, { error: "Email must be at most 254 characters long" })
   .toLowerCase()
-  .pipe(z.email());
+  .pipe(z.email({ error: "Invalid email address" }));
 
-export const dobSchema = z.iso
-  .date()
-  .transform((date) => new Date(`${date}T00:00:00Z`))
-  .refine((date) => date <= new Date(), {
-    error: "Date of birth cannot be in the future",
-  });
+export const organizationIdSchema = z.uuid({
+  error: "Invalid organization id",
+});
 
-export const organizationIdSchema = z.preprocess(
+export const nullableOrganizationIdSchema = z.preprocess(
   (value) => (value === "" ? null : value),
-  z.uuid().nullish(),
+  z.uuid({ error: "Invalid organization id" }).nullish(),
 );
+
+export const teamIdSchema = z.uuid({ error: "Invalid team id" });
+export const userIdSchema = z.uuid({ error: "Invalid user id" });
+export const leaderIdSchema = z.uuid({ error: "Invalid leader id" });
 
 export const avatarSchema = z.preprocess(
   (value) => (value instanceof File && value.size === 0 ? undefined : value),
   z
-    .instanceof(File)
-    .refine((file) => file.size <= 80 * 1024, "Avatar must be at most 80 KB")
+    .instanceof(File, { error: "Avatar must be an uploaded file" })
+    .refine((file) => file.size <= 100 * 1024, {
+      error: "Avatar must be at most 100 KB",
+    })
     .optional(),
 );
 
@@ -47,30 +60,36 @@ export const dateSchema = z.iso.date({
   error: "Date must be a valid date in YYYY-MM-DD format",
 });
 
-export const teamIdSchema = z.uuid({ error: "Invalid team id" });
-
-export const userIdSchema = z.uuid({ error: "Invalid user id" });
-
 // ---------------------------------------------------------------------------
 // User schemas
 // ---------------------------------------------------------------------------
 
-export const profileFields = {
-  name: z.string().trim().min(2).max(100),
+export const profileSchema = z.object({
+  name: profileNameSchema,
   email: emailSchema,
   avatar: avatarSchema,
-  gender: z.enum(GENDER),
-  bloodGroup: z.enum(BLOOD_GROUP),
-  dob: dobSchema,
-  address: z.string().trim().min(1, { error: "Address is required" }).max(1000),
-};
+  gender: z.enum(GENDER, { error: "Gender must be MALE, FEMALE, or OTHER" }),
+  bloodGroup: z.enum(BLOOD_GROUP, { error: "Invalid blood group" }),
+  dob: z.iso
+    .date({ error: "Date of birth must be a valid YYYY-MM-DD date" })
+    .transform((date) => new Date(`${date}T00:00:00Z`))
+    .refine((date) => date <= new Date(), {
+      error: "Date of birth cannot be in the future",
+    }),
+  address: z
+    .string({ error: "Address must be text" })
+    .trim()
+    .min(1, { error: "Address is required" })
+    .max(1000, { error: "Address must be at most 1000 characters long" }),
+});
 
-export const createUserSchema = z
-  .object({
-    ...profileFields,
+export const createUserSchema = profileSchema
+  .extend({
     password: strongPassword,
-    role: z.enum(USER_ROLE).default(USER_ROLE.STUDENT),
-    organizationId: organizationIdSchema,
+    role: z
+      .enum(USER_ROLE, { error: "Invalid role" })
+      .default(USER_ROLE.STUDENT),
+    organizationId: nullableOrganizationIdSchema,
   })
   .refine(
     ({ role, organizationId }) =>
@@ -82,24 +101,16 @@ export const createUserSchema = z
     },
   );
 
-export const updateProfileSchema = z
-  .object(profileFields)
-  .omit({ email: true })
-  .partial()
-  .refine((data) => Object.values(data).some((value) => value !== undefined), {
-    error: "At least one field is required",
-  });
-
 export const loginSchema = z.object({
   email: emailSchema,
-  password: z.string().min(1, { error: "Password is required" }).max(128),
+  password: strongPassword,
 });
 
 export const refreshTokenSchema = z.object({
   refreshToken: z
-    .string()
+    .string({ error: "Refresh token must be text" })
     .min(1, { error: "Refresh token is required" })
-    .max(4096),
+    .max(4096, { error: "Refresh token is too long" }),
 });
 
 // ---------------------------------------------------------------------------
@@ -108,28 +119,52 @@ export const refreshTokenSchema = z.object({
 
 export const createOrganizationSchema = z.object({
   name: nameSchema,
-  metadata: z.string().max(2000).nullish(),
+  metadata: z
+    .string({ error: "Metadata must be text" })
+    .max(2000, { error: "Metadata must be at most 2000 characters long" })
+    .nullish(),
 });
 
-export const organizationIdParamSchema = z.object({
-  organizationId: z.uuid({ error: "Invalid organization id" }),
+export const deleteOrganizationSchema = z.object({
+  organizationId: organizationIdSchema,
 });
 
 export const createTeamSchema = z.object({
+  organizationId: organizationIdSchema,
   name: nameSchema,
-  leaderId: z.uuid({ error: "Invalid leader id" }),
+  leaderId: leaderIdSchema,
 });
 
-export const organizationTeamParamSchema = organizationIdParamSchema.extend({
-  teamId: z.uuid({ error: "Invalid team id" }),
+export const updateTeamSchema = z
+  .object({
+    organizationId: organizationIdSchema,
+    teamId: teamIdSchema,
+    name: nameSchema.optional(),
+    leaderId: leaderIdSchema.optional(),
+  })
+  .refine(
+    ({ name, leaderId }) => name !== undefined || leaderId !== undefined,
+    {
+      error: "At least one of name or leaderId is required",
+    },
+  );
+
+export const teamMembersQuerySchema = z.object({
+  organizationId: organizationIdSchema,
+  teamId: teamIdSchema,
 });
 
 export const addTeamMemberSchema = z.object({
-  userId: z.uuid({ error: "Invalid user id" }),
+  teamId: teamIdSchema,
+  userId: userIdSchema,
 });
 
-export const teamMemberParamSchema = organizationTeamParamSchema.extend({
-  userId: z.uuid({ error: "Invalid user id" }),
+export const teamMemberParamSchema = z.object({
+  userId: userIdSchema,
+});
+
+export const deleteTeamMemberSchema = z.object({
+  organizationId: organizationIdSchema,
 });
 
 // ---------------------------------------------------------------------------
@@ -152,13 +187,14 @@ export const markAttendanceSchema = z.object({
           error: "Invalid attendance status",
         }),
       }),
+      { error: "Records must be an array" },
     )
     .min(1, { error: "At least one attendance record is required" })
     .max(200, { error: "Cannot mark more than 200 users at once" })
     .refine(
       (records) =>
         new Set(records.map((record) => record.userId)).size === records.length,
-      { error: "Duplicate userId entries are not allowed" },
+      { error: "Each user can appear only once in the records" },
     ),
 });
 
@@ -174,8 +210,17 @@ export const attendanceQuerySchema = z
   .object({
     from: dateSchema.optional(),
     to: dateSchema.optional(),
-    limit: z.coerce.number().int().min(1).max(366).default(31),
-    offset: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce
+      .number({ error: "Limit must be a number" })
+      .int({ error: "Limit must be an integer" })
+      .min(1, { error: "Limit must be at least 1" })
+      .max(366, { error: "Limit must be at most 366" })
+      .default(31),
+    offset: z.coerce
+      .number({ error: "Offset must be a number" })
+      .int({ error: "Offset must be an integer" })
+      .min(0, { error: "Offset must be 0 or greater" })
+      .default(0),
   })
   .refine((query) => !query.from || !query.to || query.from <= query.to, {
     error: "'from' must be on or before 'to'",
