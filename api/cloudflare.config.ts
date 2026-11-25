@@ -1,0 +1,22 @@
+import { bindings, defineConfig } from "cf/config";
+import * as entrypoint from "./src/index.ts" with { type: "cf-worker" };
+
+export default defineConfig({
+  worker: {
+    name: "sms-api",
+    compatibilityDate: "2026-11-01",
+    entrypoint,
+    env: {
+      DATABASE_URL: bindings.secret(),
+      CLIENT_URL: bindings.text("http://localhost:5174"),
+      ACCESS_TOKEN_SECRET: bindings.secret(),
+      ACCESS_TOKEN_EXPIRY: bindings.text("86400"),
+      REFRESH_TOKEN_SECRET: bindings.secret(),
+      REFRESH_TOKEN_EXPIRY: bindings.text("604800"),
+      BUCKET: bindings.r2({ name: "useravatar" }),
+      AVATAR_PUBLIC_URL: bindings.text(
+        "https://pub-af563645b2cd4a4f88b7a9b53e81765a.r2.dev",
+      ),
+    },
+  },
+});
